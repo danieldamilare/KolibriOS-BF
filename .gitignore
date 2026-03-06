@@ -1,0 +1,7 @@
+*.swp
+*.swo
+*.swn
+*~
+*.bin
+*.o
+*.obj
