@@ -38,6 +38,8 @@ import terminal, \
 ; data definitions
 BUFFER_SIZE = (2 shl 16)
 TAPE_SIZE  = 30000
+OUTPUT_BUF_LEN = 512
+output_buf_idx dd 0
 
 prompt db "BF:> ", 0
 TITLE db "                       BRAINFUCK INTERPRETER  ",0
@@ -94,6 +96,30 @@ macro write a {
 ..label:
         invoke con_write, ..string
 }
+
+macro flush {
+        pusha
+        invoke  con_write_string, output_buf, dword [output_buf_idx]
+        mov     dword [output_buf_idx], 0
+        popa
+}
+
+; line buffering 
+macro store_buf{
+local   .store, .done
+        cmp     dword [output_buf_idx], OUTPUT_BUF_LEN
+        jb      .store
+        flush
+.store:
+        mov     ebx, dword [output_buf_idx]
+        mov     [output_buf + ebx], al
+        inc     [output_buf_idx]
+        cmp     al, 10
+        jne     .done
+        flush
+.done:
+}
+
 align 4
 
 file_info_struct:
@@ -145,6 +171,13 @@ START:
         invoke  con_init, -1, -1, -1, -1, TITLE
 
 repl:
+        ; write   "Checking if there is data to flush"
+        mov     eax, [output_buf_idx]
+        test    eax, eax
+        jz      .prompt
+        ; write   "Ooops there is data to flush"
+        flush
+.prompt:
         invoke  con_write, prompt
         invoke  con_gets, buffer_data, BUFFER_SIZE
         test    eax, eax ; documentation said eax is zero when console is closed
@@ -219,6 +252,9 @@ repl:
 .process_buffer:
         mov     [buffer_data + ebx], byte 0
         call    interpret
+        ; write   "After run, processing flush"
+        flush
+        ; write   "Finish flushing..."
         jmp     .reset    ; reset tape after reading from file
 
 .check_eof:
@@ -235,11 +271,12 @@ repl:
         write   "Invalid run Command. Use run file_path"
         jmp     repl
 
-        
+
+
+                
 ; interpret  a brainfuck program
 interpret:
-    ;ecx -> ip, edx -> dp, esi => bracket depth, edi -> tape
-        ; shps  "In interpet"
+    ;ecx -> ip, edx -> dp, esi => bracket depth, edi -> tape, ebp for Ops
         ; write   "In Interpret function"
         call    preprocess
 
@@ -285,22 +322,22 @@ pdec:
         sub     edx, [arg + ebx * 4]
         jns     .dispatch
         add     edx, TAPE_SIZE
+
 .dispatch:
         DISPATCH
 
-
 output:
-        pusha
-        mov      ebx, [arg + ebx *4]
+        push     ecx
+        mov      ecx, [arg + ebx *4]
+        mov      al, byte [edi + edx]
 .loop:
-        lea      eax, [edi + edx]
-        test     ebx, ebx
+        test     ecx, ecx
         je       .dispatch
-        dec      ebx
-        invoke   con_write_string, eax, 1
+        dec      ecx
+        store_buf
         jmp      .loop
 .dispatch:
-        popa
+        pop      ecx ; restore vm state
         DISPATCH
 
 input:
@@ -409,11 +446,13 @@ EXIT:
 I_END:
     rb 4096
 align 16
+
 STACKTOP:
+
 buffer_data rb BUFFER_SIZE
 tape rb TAPE_SIZE
 
 Ops rb BUFFER_SIZE / 2 ; use half of buffer size
 arg rd BUFFER_SIZE / 2 ; use half of buffer size
-
+output_buf rb OUTPUT_BUF_LEN
 MEM:

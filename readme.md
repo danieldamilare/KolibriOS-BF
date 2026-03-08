@@ -9,7 +9,7 @@ This repository contains two implementations tailored for different KolibriOS en
 
 
 ## Technical Details
-The interpreter uses direct threaded dispatch via a jump table for efficient execution, and includes run-length encoding preprocessing for repeated instructions
+The interpreter uses direct threaded dispatch via a jump table for execution, and includes run-length encoding preprocessing for repeated instructions. On bf_console_interp.asm Output is line buffered, to minimize screen redraws on the console. Since console output on KolibriOs seems to triggers immediate
 
 ## Limitations
 The interpreter has  all the limitations in the original project and also the elf-compiler was not ported
