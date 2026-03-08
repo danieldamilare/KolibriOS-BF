@@ -11,8 +11,6 @@
     ret
  endp
 
- proc string.split  uses eax, 
-
  proc string.copy uses eax ebx ecx, _src, _dst
     mov     eax, [_src]
     mov     ebx, [_dst]
