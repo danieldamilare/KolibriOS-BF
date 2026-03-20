@@ -1,44 +1,27 @@
-format binary as ""
-
-use32
-org 0
-
-
-db 'MENUET01'
-dd 1
-dd START
-dd I_END
-dd MEM
-dd STACKTOP
-dd parameters
-dd 00
-
-parameters rb 1024
-include 'includes/macros.inc'
-@pid dd 0
-include 'includes/shell.inc'
-
-; a brainfuck interpreter 
-; data definitions
+;-----------------------------------------------------------
+; bf_core.inc - Brainfuck interpreter core
+;
+; Required macros:
+;   bf_write  - write character in al to output
+;   bf_getc   - read character from input into al
+;   write     - print a null-terminated string literal
+;
+; Required labels:
+;   buffer_data - source buffer containing BF program with size BUFFER_SIZE
+;   tape        - data tape (TAPE_SIZE bytes)
+;   Ops         - compiled ops array (BUFFER_SIZE/2 bytes)
+;   arg         - argument array (BUFFER_SIZE/2 dwords)
+;-----------------------------------------------------------
 
 BUFFER_SIZE = (2 shl 16)
 TAPE_SIZE  = 30000
 
-prompt db "BF:> ", 0
-err1 db "Missing parenthesis match",0
-err2 db "Invalid source file",0
-ERR_SIZE = 36
-ERR2_SIZE = 30
-nl db 10
-
-file_info_struct:
-   .fn dd 0
-   .offset dd 0
-   .offset2 dd 0
-   .size dd 0
-   .ptr dd 0
-   .ecd db 0
-   .path dd 0
+macro DISPATCH {
+        movzx  eax, byte [ebp+ecx]
+        mov    ebx, ecx
+        inc    ecx
+        jmp    dword [jmp_table + eax *4]
+}
 
 jmp_table:
         dd exit_interpret
@@ -66,72 +49,42 @@ jmp_table:
         }
 
 
-START:
-        call    shell.init
-        ; shps   "Starting..."
-        shln
-        ; shps  "Parameters: "
-        ; shpsa  parameters
-        cmp     byte[parameters], 0
-        je      exit
 
+;-----------------------------------------------------------
+; interpret: Execute Brainfuck program from buffer_data
+; uses ecx, edx, esi, edi, and epi, ebx, eax
+; ----------------------------------------------------------
 
-.run_prog:
-; assume command is in format run filepath
-        lea     eax, [buffer_data + 4]
-        stdcall string.copy, eax, parameters
-        mov     esi, parameters
-        ; first get_file size
-
-        mov     eax, 70
-        mov     dword [file_info_struct], 0x0
-        mov     dword [file_info_struct + 12], BUFFER_SIZE-1
-        mov     dword [file_info_struct + 16], buffer_data
-        mov     dword [file_info_struct + 21], parameters
-        mov     ebx, file_info_struct
-        mcall
-
-        test    eax, eax
-        jnz     .check_eof
-
-.process_buffer:
-        mov     [buffer_data + ebx], byte 0
-        call    interpret
-        jmp     exit
-
-.check_eof:
-        cmp     eax, 6
-        je      .process_buffer
-
-.run_error:
-        write2  "Error opening file: "
-        shpsa   parameters
-        shln
-        jmp     exit
-
-macro DISPATCH {
-        movzx  eax, byte [ebp+ecx]
-        mov    ebx, ecx
-        inc    ecx
-        jmp    dword [jmp_table + eax *4]
-}
-
-; interpret  a brainfuck program
 interpret:
-    ;ecx -> ip, edx -> dp, esi => bracket depth, edi -> tape
-        ; shps  "In interpet"
+;---------------------------------
+; ecx = Instruction Pointer for Ops
+; edx = Data Pointer for tape
+; edi = Tape Base Address
+; ebp = Ops array base address
+; ebx = Temporary for arg lookup
+;-----------------------------------
+
         call    preprocess
+
         cmp     eax, -1 
-        je      .match_error
+        je      .error_mismatch
+        cmp     eax, -2
+        je      .error_unclosed
+
         xor     ecx, ecx
         xor     edx, edx
         xor     esi, esi
         mov     edi, tape
         mov     ebp, Ops
+
         DISPATCH
 
-.match_error:
-        shpsa   err1
+.error_mismatch:
+        write   "Error: Unmatched ]"
+        ret
+
+.error_unclosed:
+        write  "Error: Unclosed ["
         ret
 
 exit_interpret:
@@ -140,7 +93,7 @@ exit_interpret:
 BEGIN: 
         DISPATCH
 vinc:
-        mov     eax, dword [arg + ebx * 4]
+        mov     eax, [arg + ebx * 4]
         add     byte [edi + edx], al
         DISPATCH
 
@@ -160,26 +113,30 @@ pinc:
 pdec:
         sub     edx, [arg + ebx * 4]
         jns     .dispatch
-        add      edx, TAPE_SIZE
+        add     edx, TAPE_SIZE
+
 .dispatch:
         DISPATCH
 
-
 output:
-        mov     ebx, [arg + ebx *4]
-        mov     al, byte [edi + edx]
+        push     ecx
+        mov      ecx, [arg + ebx *4]
+        mov      al, byte [edi + edx]
 .loop:
-        test    ebx, ebx
-        je      .dispatch
-        dec     ebx
-        call    shell.print_char
-        jmp     .loop
+        test     ecx, ecx
+        je       .dispatch
+        dec      ecx
+        bf_write      ; bf_write write the character in al
+        jmp      .loop
 .dispatch:
+        pop      ecx ; restore vm state
         DISPATCH
 
 input:
-        shgc
+        pusha
+        bf_getc
         mov     [edi + edx], al
+        popa
         DISPATCH
 
 brac_left:
@@ -197,17 +154,22 @@ brac_right:
 .dispatch:
         DISPATCH
 
+
+;-----------------------------------------------------------
+; preprocess:  simple peephole optimzer for the interpreter
+; returns eax = 0 on success or -1 on error
+; uses esi, ebx, edi, eax
+;------------------------------------------------------------
 preprocess:
 ; esi as ptr for buffer, ebx as buffer reference
 ; edi as pointer to Ops and arg
-        ; shps   "Preprocessing"
         push    ebp
         mov     ebp, esp
         mov     ebx, buffer_data 
         xor     esi, esi
         xor     edi, edi
         xor     edx, edx
- 
+
 .start:
         movzx   eax, byte [ebx + esi]
         inc     esi 
@@ -215,7 +177,7 @@ preprocess:
         je      .exit
         cmp     eax, 127
         jg      .start
-        mov     ecx, dword [jmp_table + eax * 4]
+        mov     ecx, [jmp_table + eax * 4]
         cmp     ecx, BEGIN
         je      .start
         cmp     eax, '['
@@ -230,10 +192,10 @@ preprocess:
         mov     byte [Ops + edi], al
         inc     edi
         jmp     .start
-
+ 
 .right:
         test    edx, edx
-        je      .error
+        je      .error_mismatch
         dec     edx
         pop     ecx
         mov     [Ops + edi], al
@@ -258,28 +220,18 @@ preprocess:
         inc     edi
         jmp     .start
 
-.error:
+.error_mismatch:
         mov     eax, -1
-        leave
-        ret
+        jmp     .done
+.error_unclosed:
+        mov     eax, -2
+        jmp     .done
 .exit:
         xor     eax, eax
+        test    edx, edx
+        jnz     .error_unclosed
         mov     byte [Ops + edi], 0
+.done:
         leave
         ret
 
-exit: 
-        call    shell.destroy
-        mov     eax, -1
-        int     0x40
-I_END:
-    rb 4096
-align 16
-STACKTOP:
-buffer_data rb BUFFER_SIZE
-tape rb TAPE_SIZE
-
-Ops rb BUFFER_SIZE / 2 ; use half of buffer size
-arg rd BUFFER_SIZE / 2 ; use half of buffer size
-
-MEM:
